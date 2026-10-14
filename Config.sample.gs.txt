@@ -1,0 +1,10 @@
+/**
+ * הגדרות מקומיות של הפרויקט (קובץ תבנית).
+ * שם הקובץ בפרויקט: Config.gs (בלי .sample ובלי .txt).
+ */
+
+// מזהה גיליון הנתונים (מכתובת הגיליון: /d/<המזהה>/edit)
+var SPREADSHEET_ID = 'PUT_SPREADSHEET_ID_HERE';
+
+// תיקיית Drive לצילומי המסך (מכתובת התיקייה: /folders/<המזהה>)
+var DRIVE_FOLDER_ID = 'PUT_DRIVE_FOLDER_ID_HERE';

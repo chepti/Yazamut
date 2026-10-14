@@ -1,0 +1,1188 @@
+<script>
+(function () {
+  'use strict';
+
+  // ───────────── קבועים ומצב ─────────────
+  var STATUS_EMOJI = { 'פתוחה': '🌱', 'נבחרה': '✋', 'בבנייה': '🔧', 'תוצר ראשוני': '🧪', 'משוב עם לקוח': '💬', 'סבב שיפור': '✨', 'מוכן להשקה': '🚀', 'נמסרה': '🎉' };
+  // סדר השלבים = סדר ההתקדמות (צריך להתאים ל-STATUSES בשרת)
+  var STATUSES = ['פתוחה', 'נבחרה', 'בבנייה', 'תוצר ראשוני', 'משוב עם לקוח', 'סבב שיפור', 'מוכן להשקה', 'נמסרה'];
+  var USER_STATUSES = STATUSES.slice(1);
+  var QUESTIONS = [
+    'האם זה נכנס ב-1 עד 3 מסכים?',
+    'האם התוכן קבוע או מחושב במקום, בלי שמירת מידע בין שימושים?',
+    'האם משתמש אחד מספיק?',
+    'האם אפשר לבדוק את זה עם אדם אחד תוך 10 דקות?'
+  ];
+  var reducedMotion = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  var S = null;      // המצב האחרון מהשרת: {me, config, orders, sheetUrl}
+  var busy = 0;      // כמה קריאות בשרת בטיסה
+  var toastTimer = null;
+
+  // ───────────── עזרי DOM (תמיד textContent, אף פעם לא innerHTML) ─────────────
+  function $(sel) { return document.querySelector(sel); }
+  function add(el, kids) {
+    kids.forEach(function (k) {
+      if (k == null || k === false) return;
+      if (Array.isArray(k)) add(el, k);
+      else el.appendChild(k.nodeType ? k : document.createTextNode(String(k)));
+    });
+  }
+  function h(tag, attrs) {
+    var el = document.createElement(tag);
+    if (attrs) Object.keys(attrs).forEach(function (k) {
+      var v = attrs[k];
+      if (v == null || v === false) return;
+      if (k === 'class') el.className = v;
+      else if (k === 'text') el.textContent = v;
+      else if (k.slice(0, 2) === 'on') el.addEventListener(k.slice(2), v);
+      else if (k === 'for') el.htmlFor = v;
+      else el.setAttribute(k, v === true ? '' : v);
+    });
+    add(el, Array.prototype.slice.call(arguments, 2));
+    return el;
+  }
+  var SVGNS = 'http://www.w3.org/2000/svg';
+  function svg(tag, attrs) {
+    var el = document.createElementNS(SVGNS, tag);
+    Object.keys(attrs || {}).forEach(function (k) { el.setAttribute(k, attrs[k]); });
+    add(el, Array.prototype.slice.call(arguments, 2));
+    return el;
+  }
+  // אייקונים בסגנון Lucide: stroke 2, קצוות מעוגלים
+  var ICONS = {
+    grid: [['rect', { x: 3, y: 3, width: 7, height: 7, rx: 1 }], ['rect', { x: 14, y: 3, width: 7, height: 7, rx: 1 }], ['rect', { x: 14, y: 14, width: 7, height: 7, rx: 1 }], ['rect', { x: 3, y: 14, width: 7, height: 7, rx: 1 }]],
+    plus: [['circle', { cx: 12, cy: 12, r: 10 }], ['path', { d: 'M8 12h8' }], ['path', { d: 'M12 8v8' }]],
+    user: [['path', { d: 'M19 21v-2a4 4 0 0 0-4-4H9a4 4 0 0 0-4 4v2' }], ['circle', { cx: 12, cy: 7, r: 4 }]],
+    shield: [['path', { d: 'M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z' }]],
+    lock: [['rect', { x: 3, y: 11, width: 18, height: 11, rx: 2 }], ['path', { d: 'M7 11V7a5 5 0 0 1 10 0v4' }]],
+    download: [['path', { d: 'M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4' }], ['path', { d: 'M7 10l5 5 5-5' }], ['path', { d: 'M12 15V3' }]],
+    heart: [['path', { d: 'M19 14c1.49-1.46 3-3.21 3-5.5A5.5 5.5 0 0 0 16.5 3c-1.76 0-3 .5-4.5 2-1.5-1.5-2.74-2-4.5-2A5.5 5.5 0 0 0 2 8.5c0 2.3 1.5 4.05 3 5.5l7 7Z' }]],
+    eye: [['path', { d: 'M2 12s3-7 10-7 10 7 10 7-3 7-10 7-10-7-10-7Z' }], ['circle', { cx: 12, cy: 12, r: 3 }]],
+    comment: [['path', { d: 'M7.9 20A9 9 0 1 0 4 16.1L2 22Z' }]],
+    image: [['rect', { x: 3, y: 3, width: 18, height: 18, rx: 2 }], ['circle', { cx: 9, cy: 9, r: 2 }], ['path', { d: 'm21 15-3.09-3.09a2 2 0 0 0-2.82 0L6 21' }]],
+    trash: [['path', { d: 'M3 6h18' }], ['path', { d: 'M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6' }], ['path', { d: 'M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2' }]],
+    external: [['path', { d: 'M15 3h6v6' }], ['path', { d: 'M10 14 21 3' }], ['path', { d: 'M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6' }]],
+    up: [['path', { d: 'm18 15-6-6-6 6' }]],
+    down: [['path', { d: 'm6 9 6 6 6-6' }]],
+    pencil: [['path', { d: 'M17 3a2.85 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z' }], ['path', { d: 'm15 5 4 4' }]],
+    link: [['path', { d: 'M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71' }], ['path', { d: 'M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71' }]]
+  };
+  function icon(name) {
+    var s = svg('svg', { viewBox: '0 0 24 24', fill: 'none', stroke: 'currentColor', 'stroke-width': 2, 'stroke-linecap': 'round', 'stroke-linejoin': 'round', 'aria-hidden': 'true' });
+    ICONS[name].forEach(function (p) { s.appendChild(svg(p[0], p[1])); });
+    return s;
+  }
+  function fillIcons(root) {
+    (root || document).querySelectorAll('[data-icon]').forEach(function (el) {
+      if (!el.firstChild) el.appendChild(icon(el.getAttribute('data-icon')));
+    });
+  }
+
+  // ───────────── תקשורת עם השרת ─────────────
+  function setBusy(d) {
+    busy += d;
+    $('#loading').hidden = busy <= 0;
+  }
+  function errText(e) {
+    var m = (e && e.message) ? e.message : 'משהו השתבש, נסי שוב.';
+    return m.replace(/^(Error|Exception):\s*/i, '');
+  }
+  /** call('fnName', [args], onSuccess) — עם מצב טעינה וטיפול בשגיאות */
+  function call(fn, args, ok, quiet) {
+    // quiet = קריאת רקע (למשל טעינת תמונות): בלי מסך טעינה ובלי הודעת שגיאה
+    if (!quiet) setBusy(1);
+    var runner = google.script.run
+      .withSuccessHandler(function (res) { if (!quiet) setBusy(-1); try { ok(res); } catch (e) { toast(errText(e), true); } })
+      .withFailureHandler(function (err) { if (!quiet) { setBusy(-1); toast(errText(err), true); } });
+    runner[fn].apply(runner, args || []);
+  }
+  /** פעולה שמחזירה מצב מעודכן */
+  function act(fn, args, after) {
+    call(fn, args, function (state) { S = state; render(); if (after) after(); });
+  }
+
+  function toast(msg, isErr) {
+    var t = $('#toast');
+    t.textContent = msg;
+    t.className = 'toast' + (isErr ? ' err' : '');
+    t.hidden = false;
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(function () { t.hidden = true; }, isErr ? 6000 : 3500);
+  }
+
+  // ───────────── קונפטי (canvas, בלי ספרייה) ─────────────
+  function confetti() {
+    if (reducedMotion) return;
+    var c = $('#confetti'), ctx = c.getContext('2d');
+    var dpr = window.devicePixelRatio || 1, w = window.innerWidth, hgt = window.innerHeight;
+    c.width = w * dpr; c.height = hgt * dpr;
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    var colors = ['#ff4fc3', '#8b5cf6', '#4fe3ff', '#ffd466', '#ffffff'];
+    var parts = [];
+    for (var i = 0; i < 160; i++) {
+      var ang = Math.random() * Math.PI * 2, sp = 5 + Math.random() * 10;
+      parts.push({ x: w / 2, y: hgt * 0.4, vx: Math.cos(ang) * sp, vy: Math.sin(ang) * sp - 6, s: 6 + Math.random() * 7,
+        r: Math.random() * 6, vr: (Math.random() - .5) * .4, c: colors[i % colors.length] });
+    }
+    var start = performance.now();
+    (function frame(now) {
+      ctx.clearRect(0, 0, w, hgt);
+      var alive = false;
+      parts.forEach(function (p) {
+        p.vy += .28; p.vx *= .99; p.x += p.vx; p.y += p.vy; p.r += p.vr;
+        if (p.y < hgt + 20) alive = true;
+        ctx.save(); ctx.translate(p.x, p.y); ctx.rotate(p.r);
+        ctx.fillStyle = p.c; ctx.fillRect(-p.s / 2, -p.s / 3, p.s, p.s * .6);
+        ctx.restore();
+      });
+      if (alive && now - start < 4000) requestAnimationFrame(frame);
+      else ctx.clearRect(0, 0, w, hgt);
+    })(start);
+  }
+
+  // ───────────── ניווט בלשוניות ─────────────
+  function showTab(name) {
+    ['board', 'new', 'gallery', 'mine', 'admin'].forEach(function (t) { $('#tab-' + t).hidden = (t !== name); });
+    if (name === 'gallery') loadGallery();
+    if (name === 'mine' && S) { G = null; renderMine(); } // רענון: כולל התוצרים שלי
+    document.querySelectorAll('.nav-btn').forEach(function (b) {
+      b.setAttribute('aria-selected', b.getAttribute('data-tab') === name ? 'true' : 'false');
+    });
+    window.scrollTo(0, 0);
+  }
+
+  // ───────────── כרטיס הזמנה ─────────────
+  function chip(cls, text, tip) { return h('span', { class: 'chip ' + cls, text: text, title: tip || null }); }
+  function kv(label, value) {
+    return h('dl', { class: 'kv' }, h('dt', { text: label }), h('dd', { text: value }));
+  }
+  function sizeChip(o) { return chip(o.size === 'קנבס' ? 'canvas' : 'appscript', o.size); }
+
+  function adoptEligible(o) {
+    // האם ההזמנה "ניתנת לאימוץ" ברמת הכללים הקבועים (בלי חלון האימוץ)
+    if (o.status !== 'פתוחה' && o.status !== 'נבחרה') return false;
+    if (o.adoptedByMe) return false;
+    if (o.mine && !S.config.allowAdoptOwn) return false;
+    return true;
+  }
+
+  function card(o, i, ctx) {
+    var el = h('article', { class: 'card glass' + (o.status === 'נמסרה' ? ' done' : '') });
+    el.style.setProperty('--i', Math.min(i, 14));
+
+    el.appendChild(h('div', { class: 'chips' },
+      sizeChip(o),
+      chip('st', STATUS_EMOJI[o.status] + ' ' + o.status),
+      o.grade ? chip('grade', 'כיתה ' + o.grade) : null,
+      (o.mine && ctx !== 'admin') ? h('button', { type: 'button', class: 'icon-btn pencil', title: 'עריכת ההזמנה', 'aria-label': 'עריכת ההזמנה', onclick: function () { openEditMine(o); } }, icon('pencil')) : null
+    ));
+    el.appendChild(h('h3', { class: 'card-title', text: o.title }));
+    el.appendChild(stepper(o.status));
+    el.appendChild(kv('מי המשתמש', o.userDescription));
+    el.appendChild(kv('הצורך', o.need));
+    el.appendChild(kv('פרט מהראיון', o.interviewDetail));
+    if (o.notes) el.appendChild(h('p', { class: 'note-text', text: 'הערה: ' + o.notes }));
+
+    el.appendChild(h('div', { class: 'meta' },
+      h('span', null, 'הביאה: ', h('b', { text: o.bringerName })),
+      h('span', null, 'אימצו: ', h('b', { text: o.adoptedBy.length ? o.adoptedBy.join(', ') : 'עוד לא אומצה' })),
+      (ctx === 'admin' && o.bringerEmail) ? h('span', { text: o.bringerEmail }) : null
+    ));
+
+    if (o.status === 'נמסרה' && o.adoptedBy.length) {
+      el.appendChild(h('div', { class: 'credit', text: 'הוזמן על ידי ' + o.bringerName + ', נבנה על ידי ' + o.adoptedBy.join(' ו') }));
+    }
+    if (o.productLink) {
+      el.appendChild(h('a', { class: 'btn small', href: o.productLink, target: '_blank', rel: 'noopener noreferrer' }, icon('link'), 'לתוצר'));
+    }
+
+    var actions = h('div', { class: 'card-actions' });
+    if (ctx !== 'admin') {
+      if (adoptEligible(o)) {
+        if (o.adoptedBy.length >= S.config.maxAdoptionsPerOrder) {
+          actions.appendChild(h('span', { class: 'note-text', text: 'ההזמנה מלאה' }));
+        } else if (!S.config.open[o.grade]) {
+          actions.appendChild(h('button', { type: 'button', class: 'btn', disabled: true, title: 'המורה עוד לא פתחה את חלון האימוץ' }, 'האימוץ סגור כרגע'));
+        } else {
+          actions.appendChild(h('button', { type: 'button', class: 'btn primary', onclick: function () { adopt(o); } }, 'אני לוקחת את זה'));
+        }
+      }
+      if (o.adoptedByMe && (o.status === 'נבחרה')) {
+        actions.appendChild(h('button', { type: 'button', class: 'btn small', onclick: function () { cancelAdopt(o); } }, 'ביטול האימוץ שלי'));
+      }
+    } else {
+      actions.appendChild(h('button', { type: 'button', class: 'btn small', onclick: function () { openEdit(o); } }, 'עריכה'));
+      actions.appendChild(h('button', { type: 'button', class: 'btn small danger', onclick: function () { removeOrder(o); } }, 'מחיקה'));
+    }
+    if (actions.childNodes.length) el.appendChild(actions);
+
+    // עדכון סטטוס וקישור: למי שהביאה או אימצה, גם בלוח וגם ב"שלי"
+    if (ctx === 'mine' || (ctx === 'board' && (o.mine || o.adoptedByMe))) {
+      var mp = managePanel(o, ctx);
+      if (mp) el.appendChild(mp);
+    }
+    return el;
+  }
+
+  /** פס התקדמות: כל השלבים, הממולאים הם עד השלב הנוכחי (מוצג לכולן) */
+  function stepper(status) {
+    var idx = STATUSES.indexOf(status);
+    var label = 'שלב ' + (idx + 1) + ' מתוך ' + STATUSES.length + ': ' + status;
+    var bar = h('div', { class: 'stepper', role: 'img', 'aria-label': label, title: label });
+    STATUSES.forEach(function (s, i) { bar.appendChild(h('i', { class: i <= idx ? 'on' : '' })); });
+    return bar;
+  }
+
+  /** עדכון סטטוס וקישור */
+  function managePanel(o, ctx) {
+    if (!o.adoptedBy.length) {
+      return ctx === 'mine' ? h('p', { class: 'note-text', text: o.mine ? 'ממתינה שמישהי תאמץ אותה.' : '' }) : null;
+    }
+    var uid = 'm-' + o.id;
+    var sel = h('select', { id: uid + '-s' });
+    USER_STATUSES.forEach(function (s) { sel.appendChild(h('option', { value: s, text: STATUS_EMOJI[s] + ' ' + s })); });
+    sel.value = USER_STATUSES.indexOf(o.status) >= 0 ? o.status : 'נבחרה';
+    var link = h('input', { id: uid + '-l', type: 'url', maxlength: 500, placeholder: 'https://...', value: o.productLink || '' });
+    link.value = o.productLink || '';
+    return h('div', { class: 'manage' },
+      h('div', { class: 'field' }, h('label', { for: uid + '-s', text: 'סטטוס' }), sel),
+      h('div', { class: 'field' }, h('label', { for: uid + '-l', text: 'קישור לתוצר' }), link),
+      h('button', { type: 'button', class: 'btn primary small', onclick: function () {
+        var before = o.status;
+        act('updateMyOrder', [o.id, { status: sel.value, productLink: link.value.trim() }], function () {
+          toast('נשמר!');
+          if (sel.value === 'נמסרה' && before !== 'נמסרה') confetti();
+        });
+      } }, 'שמירה')
+    );
+  }
+
+  function emptyState(title, text) {
+    var art = svg('svg', { viewBox: '0 0 64 64', fill: 'none', stroke: '#cfc6ee', 'stroke-width': 2, 'stroke-linecap': 'round', 'stroke-linejoin': 'round', 'aria-hidden': 'true' },
+      svg('circle', { cx: 32, cy: 32, r: 28, fill: 'rgba(139,92,246,.25)' }),
+      svg('path', { d: 'M32 52V30' }),
+      svg('path', { d: 'M32 36c0-9 7-15 18-15 0 9-7 15-18 15z', fill: 'rgba(79,227,255,.35)' }),
+      svg('path', { d: 'M32 42c0-7-5-12-14-12 0 7 5 12 14 12z', fill: 'rgba(255,79,195,.35)' }));
+    return h('div', { class: 'empty' }, art, h('h3', { text: title }), h('p', { text: text }));
+  }
+
+  // ───────────── פעולות תלמידה ─────────────
+  function adopt(o) {
+    act('adoptOrder', [o.id], function () { toast('איזה כיף! ההזמנה שלך.'); confetti(); });
+  }
+  function cancelAdopt(o) {
+    if (!confirm('לבטל את האימוץ של "' + o.title + '"?')) return;
+    act('cancelAdoption', [o.id], function () { toast('האימוץ בוטל.'); });
+  }
+
+  // ───────────── הלוח ─────────────
+  function option(v, t) { return h('option', { value: v, text: t }); }
+  function initFilters() {
+    var fs = $('#f-size'), fst = $('#f-status'), fg = $('#f-grade');
+    fs.appendChild(option('', 'הכול')); fs.appendChild(option('קנבס', 'קנבס')); fs.appendChild(option('אפפסקריפט', 'אפפסקריפט'));
+    fst.appendChild(option('', 'הכול'));
+    STATUSES.forEach(function (s) { fst.appendChild(option(s, STATUS_EMOJI[s] + ' ' + s)); });
+    fg.appendChild(option('', 'הכול')); fg.appendChild(option('ז', 'ז')); fg.appendChild(option('ח', 'ח'));
+    ['#f-search', '#f-size', '#f-status', '#f-grade'].forEach(function (s) {
+      $(s).addEventListener('input', renderBoard);
+    });
+  }
+
+  /** פס התקדמות קבוצתי קטן בראש הלוח (מחושב מההזמנות שהמשתמשת רואה) */
+  function renderProgress() {
+    var box = $('#board-progress');
+    var total = S.orders.length;
+    var adopted = S.orders.filter(function (o) { return o.adoptedBy.length > 0; }).length;
+    var delivered = S.orders.filter(function (o) { return o.status === 'נמסרה'; }).length;
+    var inBuild = S.orders.filter(function (o) { return STATUSES.indexOf(o.status) >= 2 && o.status !== 'נמסרה'; }).length;
+    function tile(n, label) { return h('div', { class: 'tile' }, h('b', { text: String(n) }), h('span', { text: label })); }
+    box.replaceChildren(h('div', { class: 'tiles' }, tile(total, 'הזמנות'), tile(adopted, 'אומצו'), tile(inBuild, 'בדרך'), tile(delivered, 'נמסרו')));
+  }
+
+  function renderBoard() {
+    if (!S) return;
+    renderProgress();
+    var q = $('#f-search').value.trim().toLowerCase();
+    var size = $('#f-size').value, st = $('#f-status').value, gr = $('#f-grade').value;
+    var list = S.orders.filter(function (o) {
+      if (size && o.size !== size) return false;
+      if (st && o.status !== st) return false;
+      if (gr && o.grade !== gr) return false;
+      if (q) {
+        var hay = [o.title, o.userDescription, o.need, o.interviewDetail, o.bringerName, o.adoptedBy.join(' ')].join(' ').toLowerCase();
+        if (hay.indexOf(q) < 0) return false;
+      }
+      return true;
+    });
+    var box = $('#board-list');
+    box.replaceChildren();
+    $('#board-count').textContent = list.length ? ('מציגות ' + list.length + ' מתוך ' + S.orders.length + ' הזמנות') : '';
+    if (!list.length) {
+      box.appendChild(S.orders.length
+        ? emptyState('לא מצאנו כלום', 'נסי לשנות את הסינון או את החיפוש.')
+        : emptyState('הבנק עוד ריק', 'בואי תהיי הראשונה להביא הזמנה אמיתית!'));
+      return;
+    }
+    list.forEach(function (o, i) { box.appendChild(card(o, i, 'board')); });
+  }
+
+  // ───────────── הזמנה חדשה ─────────────
+  function buildQuestions() {
+    var box = $('#questions');
+    QUESTIONS.forEach(function (q, i) {
+      var name = 'q' + i;
+      function pill(val, label) {
+        var inp = h('input', { type: 'radio', name: name, value: val });
+        inp.addEventListener('change', updateRec);
+        return h('label', { class: 'pill' }, inp, h('span', { text: label }));
+      }
+      box.appendChild(h('fieldset', { class: 'q' }, h('legend', { text: (i + 1) + '. ' + q }), h('div', { class: 'opts' }, pill('yes', 'כן'), pill('no', 'לא'))));
+    });
+  }
+  function getAnswers() {
+    return QUESTIONS.map(function (q, i) {
+      var c = document.querySelector('input[name="q' + i + '"]:checked');
+      return c ? c.value === 'yes' : null;
+    });
+  }
+  function updateRec() {
+    var a = getAnswers(), rec = $('#rec');
+    rec.replaceChildren();
+    if (a.some(function (x) { return x === null; })) return;
+    var canvas = a.every(function (x) { return x; });
+    rec.appendChild(h('span', null, 'ההמלצה: ', chip(canvas ? 'canvas' : 'appscript', canvas ? 'קנבס' : 'אפפסקריפט'),
+      ' ', canvas ? 'קטנה ופשוטה, מתאימה לבנייה מהירה.' : 'פרויקט גדול יותר, עם שמירת מידע או כמה משתמשים.'));
+  }
+  function initNewForm() {
+    buildQuestions();
+    $('#new-form').addEventListener('submit', function (ev) {
+      ev.preventDefault();
+      var data = {
+        title: $('#n-title').value, userDescription: $('#n-user').value, need: $('#n-need').value,
+        interviewDetail: $('#n-interview').value, notes: $('#n-notes').value, answers: getAnswers()
+      };
+      if (!data.title.trim() || !data.userDescription.trim() || !data.need.trim() || !data.interviewDetail.trim()) {
+        toast('חסרים שדות חובה.', true); return;
+      }
+      if (data.answers.some(function (x) { return x === null; })) { toast('עני על כל ארבע שאלות הגודל.', true); return; }
+      act('createOrder', [data], function () {
+        $('#new-form').reset(); $('#rec').replaceChildren();
+        toast('ההזמנה נוספה לבנק!');
+        showTab('board');
+      });
+    });
+  }
+
+  // ───────────── שלי ─────────────
+  function renderMine() {
+    var box = $('#mine-list');
+    box.replaceChildren();
+    var brought = S.orders.filter(function (o) { return o.mine; });
+    var adopted = S.orders.filter(function (o) { return o.adoptedByMe; });
+    box.appendChild(h('div', { class: 'row', style: 'margin-bottom:6px' },
+      h('button', { type: 'button', class: 'btn', onclick: function () { openProfile(S.me.uid); } }, icon('user'), 'הפרופיל שלי')));
+    box.appendChild(h('h2', { class: 'section-title', text: 'ההזמנות שהבאתי' }));
+    var g1 = h('div', { class: 'grid' });
+    if (brought.length) brought.forEach(function (o, i) { g1.appendChild(card(o, i, 'mine')); });
+    else g1.appendChild(emptyState('עוד לא הבאת הזמנה', 'ראיינו מישהו? לשונית "הזמנה חדשה" מחכה לך.'));
+    box.appendChild(g1);
+    box.appendChild(h('h2', { class: 'section-title', text: 'ההזמנות שאימצתי' }));
+    var g2 = h('div', { class: 'grid' });
+    if (adopted.length) adopted.forEach(function (o, i) { g2.appendChild(card(o, i, 'mine')); });
+    else g2.appendChild(emptyState('עוד לא אימצת', 'כשחלון האימוץ ייפתח, תבחרי הזמנה בלוח.'));
+    box.appendChild(g2);
+    renderMyProjects(box);
+  }
+
+  /** התוצרים שפרסמתי: כאן נמצא גם דף ההכנה לפיץ' */
+  function renderMyProjects(box) {
+    if (!G) { call('getGallery', [], function (g) { G = g; if (!$('#tab-mine').hidden) renderMine(); }, true); return; }
+    var mine = G.projects.filter(function (p) { return p.mine; });
+    box.appendChild(h('h2', { class: 'section-title', text: 'התוצרים שלי' }));
+    var grid = h('div', { class: 'grid' });
+    if (mine.length) mine.forEach(function (p, i) { grid.appendChild(projectCard(p, i, function () { renderMine(); })); });
+    else grid.appendChild(emptyState('עוד לא פרסמת תוצר', 'כשתסיימי לבנות, לשונית "גלריה" וכפתור "פרסמי תוצר" מחכים. אחר כך יופיע כאן גם דף ההכנה לפיץ\'.'));
+    box.appendChild(grid);
+    ensureThumbs(mine);
+  }
+
+  // ───────────── ניהול (מורה) ─────────────
+  function renderAdmin() {
+    var box = $('#admin-box');
+    box.replaceChildren();
+    var cfg = S.config;
+
+    var maxIn = h('input', { id: 'a-max', type: 'number', min: 1, max: 10, value: String(cfg.maxAdoptionsPerOrder) });
+    maxIn.value = cfg.maxAdoptionsPerOrder;
+    var own = h('input', { id: 'a-own', type: 'checkbox' });
+    own.checked = cfg.allowAdoptOwn;
+
+    var winPanel = h('section', { class: 'glass panel' }, h('h2', { text: 'חלון האימוץ (לכל קבוצה בנפרד)' }));
+    ['ז', 'ח'].forEach(function (g) {
+      var isOpen = cfg.open[g];
+      winPanel.appendChild(h('div', { class: 'row', style: 'margin-bottom:12px' },
+        h('b', { text: 'קבוצה ' + g + "'" }),
+        h('span', { class: 'status-open ' + (isOpen ? 'on' : 'off'), text: isOpen ? 'פתוח' : 'סגור' }),
+        h('button', { type: 'button', class: 'btn primary small', onclick: function () {
+          act('adminSetConfig', [{ openGrade: g, openValue: !isOpen }], function () { toast(isOpen ? 'החלון נסגר.' : 'החלון נפתח!'); });
+        } }, isOpen ? 'סגירת החלון' : 'פתיחת החלון')
+      ));
+    });
+    box.appendChild(winPanel);
+    box.appendChild(h('section', { class: 'glass panel' },
+      h('h2', { text: 'הגדרות' }),
+      h('div', { class: 'row' },
+        h('div', { class: 'field' }, h('label', { for: 'a-max', text: 'מקסימום אימוצים להזמנה' }), maxIn),
+        h('label', { class: 'check', for: 'a-own' }, own, 'מותר לאמץ הזמנה שהבאתי בעצמי'),
+        h('button', { type: 'button', class: 'btn', onclick: function () {
+          act('adminSetConfig', [{ maxAdoptionsPerOrder: maxIn.value, allowAdoptOwn: own.checked }], function () { toast('ההגדרות נשמרו.'); });
+        } }, 'שמירת הגדרות')
+      )
+    ));
+    var tools = h('div', { class: 'row' },
+      h('button', { type: 'button', class: 'btn', onclick: exportCsv }, icon('download'), 'ייצוא ל-CSV')
+    );
+    if (S.sheetUrl) tools.appendChild(h('a', { class: 'btn', href: S.sheetUrl, target: '_blank', rel: 'noopener noreferrer' }, 'פתיחת הגיליון'));
+    box.appendChild(h('section', { class: 'glass panel' }, h('h2', { text: 'כלים' }), tools));
+
+    // הצגה בכיתה, השוואה בין קבוצות ורשימת תלמידות (נטען מהשרת)
+    var ov = h('div');
+    box.appendChild(ov);
+    loadOverview(ov);
+
+    box.appendChild(h('h2', { class: 'section-title', text: 'כל ההזמנות (' + S.orders.length + ')' }));
+    var g = h('div', { class: 'grid' });
+    if (S.orders.length) S.orders.forEach(function (o, i) { g.appendChild(card(o, i, 'admin')); });
+    else g.appendChild(emptyState('אין הזמנות', 'כשתהיינה, תוכלי לערוך ולמחוק אותן כאן.'));
+    box.appendChild(g);
+  }
+
+  function removeOrder(o) {
+    if (!confirm('למחוק את "' + o.title + '" לצמיתות?')) return;
+    act('adminDeleteOrder', [o.id], function () { toast('נמחקה.'); });
+  }
+
+  function exportCsv() {
+    call('adminExport', [], function (res) {
+      var blob = new Blob(['﻿' + res.csv], { type: 'text/csv;charset=utf-8' }); // BOM כדי שאקסל יקרא עברית
+      var url = URL.createObjectURL(blob);
+      var a = h('a', { href: url, download: res.filename });
+      document.body.appendChild(a); a.click(); a.remove();
+      setTimeout(function () { URL.revokeObjectURL(url); }, 2000);
+      toast('הקובץ ירד.');
+    });
+  }
+
+  function openEdit(o) {
+    var fields = {};
+    function textField(key, label, long, max) {
+      var el = long ? h('textarea', { id: 'e-' + key, rows: 3, maxlength: max }) : h('input', { id: 'e-' + key, maxlength: max });
+      el.value = o[key] || '';
+      fields[key] = el;
+      return h('div', { class: 'field' }, h('label', { for: 'e-' + key, text: label }), el);
+    }
+    function selField(key, label, opts) {
+      var el = h('select', { id: 'e-' + key });
+      opts.forEach(function (p) { el.appendChild(option(p[0], p[1])); });
+      el.value = o[key] || '';
+      fields[key] = el;
+      return h('div', { class: 'field' }, h('label', { for: 'e-' + key, text: label }), el);
+    }
+    function close() { back.remove(); document.removeEventListener('keydown', onKey); }
+    function onKey(e) { if (e.key === 'Escape') close(); }
+
+    var modal = h('div', { class: 'modal glass' },
+      h('h2', { text: 'עריכת הזמנה' }),
+      textField('title', 'כותרת', false, 60),
+      textField('userDescription', 'מי המשתמש', false, 120),
+      textField('need', 'הצורך', false, 200),
+      textField('interviewDetail', 'פרט מהראיון', true, 300),
+      textField('notes', 'הערות', true, 300),
+      textField('productLink', 'קישור לתוצר', false, 500),
+      selField('size', 'גודל', [['קנבס', 'קנבס'], ['אפפסקריפט', 'אפפסקריפט']]),
+      selField('status', 'סטטוס', STATUSES.map(function (s) { return [s, STATUS_EMOJI[s] + ' ' + s]; })),
+      selField('grade', 'שכבה', [['', 'ללא'], ['ז', 'ז'], ['ח', 'ח']]),
+      h('p', { class: 'hint', text: 'מעבר לסטטוס "פתוחה" מנקה את רשימת המאמצות.' }),
+      h('div', { class: 'modal-actions' },
+        h('button', { type: 'button', class: 'btn primary', onclick: function () {
+          var v = {};
+          Object.keys(fields).forEach(function (k) { v[k] = fields[k].value; });
+          if (v.status === 'פתוחה' && o.status !== 'פתוחה' && o.adoptedBy.length && !confirm('זה ינקה את המאמצות. להמשיך?')) return;
+          close();
+          act('adminUpdateOrder', [o.id, v], function () { toast('נשמר.'); });
+        } }, 'שמירה'),
+        h('button', { type: 'button', class: 'btn', onclick: close }, 'ביטול')
+      )
+    );
+    var back = h('div', { class: 'modal-back', role: 'dialog', 'aria-modal': 'true', 'aria-label': 'עריכת הזמנה' }, modal);
+    back.addEventListener('mousedown', function (e) { if (e.target === back) close(); });
+    document.addEventListener('keydown', onKey);
+    document.body.appendChild(back);
+    fields.title.focus();
+  }
+
+  // ───────────── חלונות (מחסנית, Escape סוגר את העליון) ─────────────
+  var modalStack = [];
+  function openModal(label, kids, wide, onClose) {
+    var modal = h('div', { class: 'modal glass' + (wide ? ' wide' : '') }, kids);
+    var back = h('div', { class: 'modal-back', role: 'dialog', 'aria-modal': 'true', 'aria-label': label }, modal);
+    function close() {
+      if (!back.parentNode) return;
+      back.remove();
+      if (onClose) onClose();
+      modalStack = modalStack.filter(function (c) { return c !== close; });
+    }
+    back.addEventListener('mousedown', function (e) { if (e.target === back) close(); });
+    modalStack.push(close);
+    document.body.appendChild(back);
+    return { close: close, modal: modal };
+  }
+  document.addEventListener('keydown', function (e) {
+    if (e.key === 'Escape' && modalStack.length) modalStack[modalStack.length - 1]();
+  });
+
+  // ───────────── גלריה ─────────────
+  var G = null;        // {projects, stats}
+  var thumbs = {};     // projectId -> data URL (נטען בנפרד, ברקע)
+
+  function filledIcon(name, filled) {
+    var s = icon(name);
+    if (filled) s.setAttribute('fill', 'currentColor');
+    return s;
+  }
+  function loadGallery() {
+    call('getGallery', [], function (res) { G = res; renderGallery(); });
+  }
+  function syncProject(p) {
+    if (!G) return;
+    G.projects = G.projects.map(function (x) { return x.id === p.id ? p : x; });
+  }
+
+  /** טוען ברקע את תמונות הכרטיסים שעוד אין לנו, 8 בכל קריאה */
+  function ensureThumbs(list) {
+    var need = list.filter(function (p) { return p.hasThumb && !thumbs[p.id]; }).map(function (p) { return p.id; });
+    for (var i = 0; i < need.length; i += 8) {
+      (function (chunk) {
+        call('getThumbs', [chunk], function (map) {
+          Object.keys(map).forEach(function (k) { thumbs[k] = map[k]; });
+          applyThumbs();
+        }, true);
+      })(need.slice(i, i + 8));
+    }
+    applyThumbs();
+  }
+  function applyThumbs() {
+    document.querySelectorAll('.thumb[data-pid]').forEach(function (box) {
+      var src = thumbs[box.getAttribute('data-pid')];
+      if (src && !box.querySelector('img')) {
+        box.replaceChildren(h('img', { src: src, alt: '', loading: 'lazy' }));
+      }
+    });
+  }
+
+  function countPill(iconName, n, tip, filled) {
+    return h('span', { class: 'count-pill' + (filled ? ' on' : ''), title: tip }, filledIcon(iconName, filled), h('b', { text: String(n) }), h('span', { class: 'sr', text: tip }));
+  }
+
+  function heartButton(p, onChange) {
+    var btn = h('button', { type: 'button', class: 'heart-btn' + (p.heartedByMe ? ' on' : ''), disabled: p.mine ? true : null,
+      title: p.mine ? 'אי אפשר לתת לב לתוצר של עצמך' : (p.heartedByMe ? 'להסיר את הלב' : 'לתת לב'),
+      'aria-pressed': p.heartedByMe ? 'true' : 'false' }, filledIcon('heart', p.heartedByMe), h('b', { text: String(p.hearts) }));
+    btn.addEventListener('click', function (ev) {
+      ev.stopPropagation();
+      call('toggleHeart', [p.id], function (r) {
+        var was = p.heartedByMe;
+        p.heartedByMe = r.hearted; p.hearts = r.hearts;
+        if (G) { G.stats.given += (r.hearted ? 1 : -1); syncProject(p); }
+        if (r.hearted && !was) confetti(true);
+        onChange();
+      });
+    });
+    return btn;
+  }
+
+  function projectCard(p, i, rerender) {
+    var thumb = h('button', { type: 'button', class: 'thumb', 'data-pid': p.id, 'aria-label': 'פתיחת התוצר ' + p.title, onclick: function () { openProject(p.id); } },
+      icon('image'));
+    if (thumbs[p.id]) thumb.replaceChildren(h('img', { src: thumbs[p.id], alt: '' }));
+    var el = h('article', { class: 'card glass pcard' }, thumb,
+      h('h3', { class: 'card-title', text: p.title }),
+      h('p', { class: 'note-text clamp', text: p.description }),
+      h('div', { class: 'meta' },
+        h('span', null, 'מאת ', h('button', { type: 'button', class: 'linkish', onclick: function () { openProfile(p.authorUid); } }, p.authorName),
+          p.grade ? ' (' + p.grade + "')" : '')),
+      h('div', { class: 'pcounts' },
+        heartButton(p, rerender),
+        countPill('eye', p.views, 'צפיות'),
+        countPill('comment', p.comments, 'משובים'),
+        p.mine ? h('button', { type: 'button', class: 'icon-btn', title: 'עריכת התוצר', 'aria-label': 'עריכת התוצר', onclick: function () { openEditProject(p); } }, icon('pencil')) : null,
+        h('button', { type: 'button', class: 'btn small primary', style: 'margin-inline-start:auto', onclick: function () { openProject(p.id); } }, 'לצפייה')),
+      p.mine ? h('button', { type: 'button', class: 'btn small', onclick: function () { openPitchPrep(p, null); } }, 'דף הכנה לפיץ\'') : null);
+    el.style.setProperty('--i', Math.min(i, 14));
+    return el;
+  }
+
+  function renderGallery() {
+    var top = $('#gallery-top'), box = $('#gallery-list');
+    top.replaceChildren(); box.replaceChildren();
+    if (!G) return;
+    top.appendChild(h('div', { class: 'glass gtop' },
+      h('div', { class: 'gstats' },
+        h('span', { class: 'count-pill big', title: 'לבבות שנתת' }, filledIcon('heart', false), h('b', { text: String(G.stats.given) }), ' נתתי'),
+        h('span', { class: 'count-pill big on', title: 'לבבות שקיבלת' }, filledIcon('heart', true), h('b', { text: String(G.stats.received) }), ' קיבלתי')),
+      h('button', { type: 'button', class: 'btn primary', onclick: openPublish }, icon('plus'), 'פרסמי תוצר')));
+    if (!G.projects.length) {
+      box.appendChild(emptyState('הגלריה עוד ריקה', 'כשתסיימי לבנות, תהיי הראשונה לפרסם כאן את התוצר.'));
+      return;
+    }
+    G.projects.forEach(function (p, i) { box.appendChild(projectCard(p, i, renderGallery)); });
+    ensureThumbs(G.projects);
+  }
+
+  // ───── חלון תוצר: תצוגה, לב, משוב ─────
+  function openProject(id) {
+    call('getProject', [id], function (res) { showProject(res.project, res.comments); });
+  }
+
+  function pitchItem(label, value) {
+    return value ? h('div', { class: 'pitch-item' }, h('b', { text: label }), h('p', { text: value })) : null;
+  }
+
+  function showProject(p, comments) {
+    var m;
+    var stats = h('div', { class: 'pcounts' });
+    var commentsBox = h('div', { class: 'comments' });
+    var previewBox = h('div', { class: 'preview-box' });
+    var isTeacher = S.me.role === 'teacher';
+
+    // צילום מסך קודם (תמיד עובד), והטמעה חיה לפי בקשה — אתרים רבים חוסמים הטמעה
+    function liveFrame() {
+      previewBox.replaceChildren(
+        h('div', { class: 'embed' }, h('iframe', { class: 'embed-frame', src: p.link, title: 'התוצר: ' + p.title,
+          sandbox: 'allow-scripts allow-same-origin allow-forms allow-popups allow-popups-to-escape-sandbox', referrerpolicy: 'no-referrer' })),
+        h('p', { class: 'hint', text: 'אם החלון ריק, האתר של התוצר חוסם הטמעה. אפשר לפתוח אותו בלשונית חדשה.' }));
+    }
+    function drawPreview(fetched) {
+      previewBox.replaceChildren();
+      if (thumbs[p.id]) {
+        previewBox.appendChild(h('img', { class: 'proj-shot', src: thumbs[p.id], alt: 'צילום מסך של ' + p.title }));
+        previewBox.appendChild(h('button', { type: 'button', class: 'btn small', onclick: liveFrame }, 'הצגה חיה בתוך החלון'));
+      } else if (p.hasThumb && !fetched) {
+        previewBox.appendChild(h('p', { class: 'note-text', text: 'טוענת את התמונה...' }));
+        call('getThumbs', [[p.id]], function (map) { if (map[p.id]) thumbs[p.id] = map[p.id]; drawPreview(true); }, true);
+      } else {
+        liveFrame();
+      }
+    }
+
+    function drawStats() {
+      stats.replaceChildren(
+        heartButton(p, function () { syncProject(p); drawStats(); }),
+        countPill('eye', p.views, 'צפיות'),
+        countPill('comment', p.comments, 'משובים'));
+    }
+    function drawComments() {
+      p.comments = comments.filter(function (c) { return c.text; }).length;
+      commentsBox.replaceChildren();
+      if (!comments.length) commentsBox.appendChild(h('p', { class: 'note-text', text: 'עוד אין משובים. תהיי הראשונה!' }));
+      comments.forEach(function (c) {
+        commentsBox.appendChild(h('div', { class: 'comment' },
+          h('div', { class: 'comment-head' },
+            h('button', { type: 'button', class: 'linkish', onclick: function () { openProfile(c.fromUid); } }, c.fromName),
+            h('span', { class: 'note-text', text: new Date(c.createdAt).toLocaleDateString('he-IL') }),
+            c.canDelete ? h('button', { type: 'button', class: 'icon-btn', title: 'מחיקת המשוב', 'aria-label': 'מחיקת המשוב', onclick: function () {
+              if (!confirm('למחוק את המשוב?')) return;
+              call('deleteComment', [c.id, p.id], function (list) { comments = list; drawComments(); drawStats(); });
+            } }, icon('trash')) : null),
+          c.text ? h('p', { class: 'comment-text' }, h('b', { text: 'מה אהבתי: ' }), c.text) : null,
+          c.suggestion ? h('p', { class: 'comment-text suggestion' }, h('b', { text: 'הצעה לשיפור (רק היוצרת והמורה רואות): ' }), c.suggestion) : null));
+      });
+    }
+
+    // טופס משוב: "מה אהבתי" גלוי לכולן, "הצעות לשיפור" רק ליוצרת
+    var liked = h('textarea', { id: 'fb-liked', maxlength: 200, rows: 2, placeholder: 'משהו שעבד לך, שמח אותך, או שלא ידעת שאפשר...' });
+    var sug = h('textarea', { id: 'fb-sug', maxlength: 300, rows: 3, placeholder: 'מה היית משדרגת? מה היית שואלת? (רק היא רואה)' });
+    var form = p.mine ? null : h('form', { class: 'comment-form' },
+      h('div', { class: 'field' }, h('label', { for: 'fb-liked', text: 'מה אהבתי (גלוי לכולן)' }), liked),
+      h('div', { class: 'field' }, h('label', { for: 'fb-sug', text: 'הצעות לשדרוג ושיפור (רק ליוצרת)' }), sug),
+      h('button', { type: 'submit', class: 'btn primary' }, 'שליחת משוב'));
+    if (form) form.addEventListener('submit', function (ev) {
+      ev.preventDefault();
+      if (!liked.value.trim() && !sug.value.trim()) { toast('כתבי לפחות דבר אחד.', true); return; }
+      call('addComment', [p.id, liked.value, sug.value], function (list) {
+        comments = list; liked.value = ''; sug.value = ''; drawComments(); drawStats(); toast('המשוב נשלח, תודה!');
+      });
+    });
+
+    var pt = p.pitch || {};
+    var hasPitch = ['hook', 'client', 'demo', 'feedback', 'learned', 'question'].some(function (k) { return pt[k]; });
+    var pitchCard = hasPitch ? h('div', { class: 'pitch-card' }, h('h3', { text: 'כרטיס ההצגה' }),
+      pitchItem('למי בנינו ומה הצורך', pt.hook), pitchItem('תודה ללקוח/ה', pt.client), pitchItem('מה רואים בהדגמה', pt.demo),
+      pitchItem('משוב מהלקוח ומה שינינו', pt.feedback), pitchItem('מה למדנו', pt.learned), pitchItem('שאלה לכיתה', pt.question)) : null;
+
+    var tools = h('div', { class: 'row', style: 'margin:10px 0' },
+      h('a', { class: 'btn small', href: p.link, target: '_blank', rel: 'noopener noreferrer' }, icon('external'), 'פתיחה בלשונית חדשה'),
+      p.mine ? h('button', { type: 'button', class: 'btn small', onclick: function () { m.close(); openEditProject(p); } }, icon('pencil'), 'עריכה') : null,
+      p.mine ? h('button', { type: 'button', class: 'btn small', onclick: function () { openPitchPrep(p, function () { m.close(); openProject(p.id); }); } }, 'דף הכנה לפיץ\'') : null,
+      (p.mine || isTeacher) ? h('button', { type: 'button', class: 'btn small', onclick: function () { openSummary(p, comments); } }, 'סיכום משובים') : null,
+      isTeacher ? h('button', { type: 'button', class: 'btn small primary', onclick: function () {
+        call('adminSetPresenting', [presentingId === p.id ? '' : p.id], function () { pollPresenting(); toast(presentingId === p.id ? 'ההצגה הסתיימה.' : 'התוצר מוצג עכשיו לכולן.'); m.close(); });
+      } }, presentingId === p.id ? 'סיום הצגה' : 'הצגה עכשיו') : null,
+      p.canDelete ? h('button', { type: 'button', class: 'btn small danger', onclick: function () {
+        if (!confirm('למחוק את התוצר "' + p.title + '"?')) return;
+        m.close();
+        call('deleteProject', [p.id], function (g) { G = g; renderGallery(); toast('התוצר נמחק.'); });
+      } }, icon('trash'), 'מחיקה') : null);
+
+    m = openModal('התוצר ' + p.title, [
+      h('div', { class: 'row', style: 'justify-content:space-between;align-items:center' },
+        h('h2', { text: p.title }),
+        h('button', { type: 'button', class: 'btn small', onclick: function () { m.close(); } }, 'סגירה')),
+      h('p', { class: 'meta' }, 'מאת ', h('button', { type: 'button', class: 'linkish', onclick: function () { openProfile(p.authorUid); } }, p.authorName),
+        presentingId === p.id ? h('span', { class: 'chip st live', style: 'margin-inline-start:10px', text: 'מוצג עכשיו' }) : null),
+      h('p', { class: 'proj-desc', text: p.description }),
+      (p.mine || isTeacher) ? makeTimer(180) : null,
+      previewBox, pitchCard, tools, stats,
+      h('h3', { text: 'משובים', style: 'margin:14px 0 8px' }),
+      commentsBox, form
+    ], true, function () { syncProject(p); if (G && !$('#tab-gallery').hidden) renderGallery(); });
+    drawPreview(false); drawStats(); drawComments();
+    syncProject(p);
+  }
+
+  /** טיימר ספירה לאחור (ברירת מחדל 3 דקות) להצגה ולתרגול. בצד לקוח בלבד. */
+  function makeTimer(total) {
+    var left = total, tick = null;
+    var disp = h('span', { class: 'timer-disp', role: 'timer', 'aria-live': 'off' });
+    var startBtn = h('button', { type: 'button', class: 'btn small primary' }, 'התחלה');
+    var resetBtn = h('button', { type: 'button', class: 'btn small' }, 'איפוס');
+    var box = h('div', { class: 'timer' }, disp, startBtn, resetBtn);
+    function draw() {
+      var m = Math.floor(Math.abs(left) / 60), s = Math.abs(left) % 60;
+      disp.textContent = (left < 0 ? '-' : '') + m + ':' + (s < 10 ? '0' : '') + s;
+      box.className = 'timer' + (left <= 30 && left > 0 ? ' warn' : '') + (left <= 0 ? ' over' : '');
+    }
+    function stop() { if (tick) { clearInterval(tick); tick = null; } startBtn.textContent = 'המשך'; }
+    startBtn.addEventListener('click', function () {
+      if (tick) { stop(); return; }
+      startBtn.textContent = 'עצירה';
+      tick = setInterval(function () {
+        left--; draw();
+        if (!document.body.contains(box)) { clearInterval(tick); tick = null; } // החלון נסגר
+      }, 1000);
+    });
+    resetBtn.addEventListener('click', function () { if (tick) { clearInterval(tick); tick = null; } left = total; startBtn.textContent = 'התחלה'; draw(); });
+    draw();
+    return box;
+  }
+
+  /** סיכום משובים ליוצרת: מה אהבו והצעות לשיפור, להעתקה ולהדפסה */
+  function openSummary(p, comments) {
+    var liked = comments.filter(function (c) { return c.text; });
+    var sugg = comments.filter(function (c) { return c.suggestion; });
+    function list(items, key) {
+      if (!items.length) return h('p', { class: 'note-text', text: 'עוד אין.' });
+      return h('ul', { class: 'sum-list' }, items.map(function (c) { return h('li', null, c[key], h('span', { class: 'note-text', text: ' — ' + c.fromName })); }));
+    }
+    var text = 'סיכום משובים: ' + p.title + '\n\nמה אהבו:\n' + liked.map(function (c) { return '• ' + c.text + ' (' + c.fromName + ')'; }).join('\n') +
+      '\n\nהצעות לשיפור:\n' + sugg.map(function (c) { return '• ' + c.suggestion + ' (' + c.fromName + ')'; }).join('\n');
+    var m = openModal('סיכום משובים', [
+      h('h2', { text: 'סיכום משובים: ' + p.title }),
+      h('div', { class: 'tiles' },
+        h('div', { class: 'tile' }, h('b', { text: String(p.hearts) }), h('span', { text: 'לבבות' })),
+        h('div', { class: 'tile' }, h('b', { text: String(p.views) }), h('span', { text: 'צפיות' })),
+        h('div', { class: 'tile' }, h('b', { text: String(comments.length) }), h('span', { text: 'משובים' }))),
+      h('h3', { text: 'מה אהבו', style: 'margin:10px 0 6px' }), list(liked, 'text'),
+      h('h3', { text: 'הצעות לשיפור', style: 'margin:10px 0 6px' }), list(sugg, 'suggestion'),
+      h('div', { class: 'modal-actions no-print', style: 'margin-top:14px' },
+        h('button', { type: 'button', class: 'btn primary small', onclick: function () {
+          function done() { toast('הסיכום הועתק!'); }
+          if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(text).then(done, function () { toast('ההעתקה נחסמה בדפדפן. אפשר להדפיס.', true); });
+          else toast('ההעתקה לא נתמכת כאן. אפשר להדפיס.', true);
+        } }, 'העתקה'),
+        h('button', { type: 'button', class: 'btn small', onclick: function () { window.print(); } }, 'הדפסה'),
+        h('button', { type: 'button', class: 'btn small', onclick: function () { m.close(); } }, 'סגירה'))
+    ], true);
+  }
+
+  // ───── "מוצג עכשיו": בדיקה חוזרת, באנר ופתיחה אוטומטית ─────
+  var presentingId = null, lastAutoOpened = null;
+  function pollPresenting() {
+    call('getPresenting', [], function (p) {
+      var box = $('#presenting');
+      if (!p) { box.hidden = true; presentingId = null; return; }
+      presentingId = p.id;
+      box.replaceChildren(
+        h('span', null, 'עכשיו מציגה: ', h('b', { text: p.authorName }), ' · ' + p.title,
+          p.next ? h('span', { class: 'note-text', text: '  |  הבאה בתור: ' + p.next.authorName }) : null),
+        h('button', { type: 'button', class: 'btn small primary', onclick: function () { openProject(p.id); } }, 'פתיחת התוצר ומשוב'));
+      box.hidden = false;
+      // נפתח אוטומטית פעם אחת לכל הצגה, ורק אם אין חלון פתוח (כדי לא להפריע לכתיבה)
+      if (lastAutoOpened !== p.id) {
+        lastAutoOpened = p.id;
+        if (!modalStack.length) openProject(p.id);
+      }
+    }, true);
+  }
+  function startPresentingPoll() {
+    pollPresenting();
+    setInterval(function () { if (document.visibilityState === 'visible') pollPresenting(); }, 15000);
+  }
+
+  // ───── ניהול: סקירה, השוואה בין קבוצות, רשימת תלמידות, הצגה ─────
+  function tableEl(headers, rows) {
+    var thead = h('thead', null, h('tr', null, headers.map(function (t) { return h('th', { scope: 'col', text: t }); })));
+    var tbody = h('tbody', null, rows);
+    return h('div', { class: 'table-wrap' }, h('table', null, thead, tbody));
+  }
+  function loadOverview(box) {
+    call('adminOverview', [], function (res) { renderOverview(box, res); });
+  }
+  function renderOverview(box, res) {
+    box.replaceChildren();
+    var G2 = res.groups;
+
+    // בחירת התוצר המוצג
+    var sel = h('select', { id: 'a-pres' }, option('', 'לא מוצג כלום'));
+    res.projects.forEach(function (p) { sel.appendChild(option(p.id, (p.grade ? p.grade + "' · " : '') + p.authorName + ' — ' + p.title)); });
+    sel.value = res.presenting || '';
+    // תור הצגות: סדר, והבאה בתור
+    var byId = {};
+    res.projects.forEach(function (p) { byId[p.id] = p; });
+    var queue = (res.queue || []).filter(function (id) { return byId[id]; });
+    function label(p) { return (p.grade ? p.grade + "' · " : '') + p.authorName + ' — ' + p.title; }
+    function saveQueue(q) { call('adminSetQueue', [q], function (r2) { renderOverview(box, r2); }); }
+    function present(id, msg) { call('adminSetPresenting', [id], function () { pollPresenting(); res.presenting = id; renderOverview(box, res); toast(msg); }); }
+
+    var qList = h('ol', { class: 'queue' });
+    queue.forEach(function (id, i) {
+      var p = byId[id], isNow = res.presenting === id;
+      qList.appendChild(h('li', { class: isNow ? 'now' : '' },
+        h('span', { class: 'q-text', text: label(p) + (isNow ? ' (מוצגת עכשיו)' : '') }),
+        h('button', { type: 'button', class: 'icon-btn small', title: 'למעלה', 'aria-label': 'הזזה למעלה', disabled: i === 0 ? true : null, onclick: function () {
+          var q = queue.slice(); q.splice(i - 1, 2, q[i], q[i - 1]); saveQueue(q); } }, icon('up')),
+        h('button', { type: 'button', class: 'icon-btn small', title: 'למטה', 'aria-label': 'הזזה למטה', disabled: i === queue.length - 1 ? true : null, onclick: function () {
+          var q = queue.slice(); q.splice(i, 2, q[i + 1], q[i]); saveQueue(q); } }, icon('down')),
+        h('button', { type: 'button', class: 'btn small', onclick: function () { present(id, 'התוצר נפתח לכולן.'); } }, 'הצגה עכשיו'),
+        h('button', { type: 'button', class: 'icon-btn small', title: 'הסרה מהתור', 'aria-label': 'הסרה מהתור', onclick: function () {
+          saveQueue(queue.filter(function (x) { return x !== id; })); } }, icon('trash'))));
+    });
+    var addSel = h('select', { id: 'a-add' }, option('', 'בחרי תוצר להוספה לתור'));
+    res.projects.filter(function (p) { return queue.indexOf(p.id) < 0; }).forEach(function (p) { addSel.appendChild(option(p.id, label(p))); });
+    var curIdx = queue.indexOf(res.presenting);
+    var nextId = curIdx >= 0 ? queue[curIdx + 1] : (res.presenting ? null : queue[0]);
+    box.appendChild(h('section', { class: 'glass panel' },
+      h('h2', { text: 'הצגה בכיתה' }),
+      h('div', { class: 'row' },
+        h('div', { class: 'field', style: 'flex:1 1 280px' }, h('label', { for: 'a-pres', text: 'התוצר המוצג עכשיו' }), sel),
+        h('button', { type: 'button', class: 'btn primary', onclick: function () { present(sel.value, sel.value ? 'התוצר נפתח לכולן.' : 'ההצגה הסתיימה.'); } }, 'עדכון'),
+        nextId ? h('button', { type: 'button', class: 'btn', onclick: function () { present(nextId, 'הבאה בתור מציגה עכשיו.'); } }, 'הבאה בתור: ' + byId[nextId].authorName) : null),
+      h('h3', { text: 'סדר ההצגות', style: 'margin:16px 0 8px' }),
+      queue.length ? qList : h('p', { class: 'note-text', text: 'התור ריק. הוסיפי תוצרים לפי סדר ההצגה.' }),
+      h('div', { class: 'row', style: 'margin-top:10px' },
+        h('div', { class: 'field', style: 'flex:1 1 280px' }, h('label', { for: 'a-add', text: 'הוספה לתור' }), addSel),
+        h('button', { type: 'button', class: 'btn', onclick: function () { if (addSel.value) saveQueue(queue.concat([addSel.value])); } }, 'הוספה')),
+      h('p', { class: 'hint', text: 'כל התלמידות בקבוצה של התוצר רואות באנר ונפתח להן התוצר עם טופס משוב. בבאנר מופיעה גם מי הבאה בתור.' })));
+
+    // השוואה בין הקבוצות
+    var metrics = [['תלמידות רשומות', 'students'], ['הזמנות', 'orders'], ['הזמנות שאומצו', 'adopted']];
+    var rows = metrics.map(function (mt) {
+      return h('tr', null, h('th', { scope: 'row', text: mt[0] }), h('td', { text: String(G2['ז'][mt[1]]) }), h('td', { text: String(G2['ח'][mt[1]]) }));
+    });
+    res.statuses.forEach(function (s) {
+      rows.push(h('tr', null, h('th', { scope: 'row', text: STATUS_EMOJI[s] + ' ' + s }), h('td', { text: String(G2['ז'].byStatus[s]) }), h('td', { text: String(G2['ח'].byStatus[s]) })));
+    });
+    [['תוצרים בגלריה', 'projects'], ['לבבות', 'hearts'], ['משובים', 'comments']].forEach(function (mt) {
+      rows.push(h('tr', null, h('th', { scope: 'row', text: mt[0] }), h('td', { text: String(G2['ז'][mt[1]]) }), h('td', { text: String(G2['ח'][mt[1]]) })));
+    });
+    box.appendChild(h('section', { class: 'glass panel' }, h('h2', { text: 'השוואה בין הקבוצות' }), tableEl(['מדד', "ז'", "ח'"], rows)));
+
+    // תלמידות לפי קבוצות
+    ['ז', 'ח', ''].forEach(function (g) {
+      var list = res.students.filter(function (s) { return s.grade === g; });
+      if (!list.length) return;
+      var trs = list.map(function (s) {
+        function cell(arr) { return h('td', { title: arr.join('\n') }, h('b', { text: String(arr.length) }), arr.length ? h('div', { class: 'cell-list', text: arr.join(' · ') }) : null); }
+        var quiet = !s.brought.length && !s.adopted.length && !s.projects.length;
+        return h('tr', { class: quiet ? 'quiet' : '' },
+          h('th', { scope: 'row' }, s.name, ' ', h('button', { type: 'button', class: 'icon-btn small', title: 'עריכת שם', 'aria-label': 'עריכת השם של ' + s.name, onclick: function () {
+            var nn = prompt('שם חדש עבור ' + s.name + ':', s.name);
+            if (nn === null || !nn.trim()) return;
+            call('adminSetName', [s.email, nn], function (r2) { renderOverview(box, r2); toast('השם עודכן.'); });
+          } }, icon('pencil'))),
+          cell(s.brought), cell(s.adopted), cell(s.projects),
+          h('td', { text: s.heartsGiven + ' / ' + s.heartsReceived }), h('td', { text: String(s.feedbackGiven) }));
+      });
+      box.appendChild(h('section', { class: 'glass panel' },
+        h('h2', { text: (g ? 'קבוצה ' + g + "'" : 'ללא שכבה') + ' (' + list.length + ')' }),
+        tableEl(['שם', 'הביאה', 'אימצה', 'תוצרים', 'לבבות נתנה / קיבלה', 'משובים שנתנה'], trs),
+        h('p', { class: 'hint', text: 'שורה עמומה = עוד לא עשתה כלום.' })));
+    });
+  }
+
+  // ───── פרופיל ─────
+  function openProfile(uid) {
+    call('getProfile', [uid], showProfile);
+  }
+  function showProfile(pr) {
+    var m;
+    function tile(n, label) { return h('div', { class: 'tile' }, h('b', { text: String(n) }), h('span', { text: label })); }
+    var bio;
+    if (pr.mine) {
+      // תיקון שם (למשל אם נכתב באנגלית בטעות)
+      var nameIn = h('input', { id: 'p-name', maxlength: 20 });
+      nameIn.value = pr.name;
+      var nameBox = h('div', { class: 'field' }, h('label', { for: 'p-name', text: 'השם שלי' }), nameIn,
+        h('button', { type: 'button', class: 'btn small', style: 'align-self:flex-start', onclick: function () {
+          act('setMyName', [nameIn.value], function () { toast('השם עודכן בכל המקומות!'); });
+        } }, 'שמירת שם'));
+      var ta = h('textarea', { id: 'p-bio', maxlength: 120, rows: 2, placeholder: 'כמה מילים עליי...' });
+      ta.value = pr.bio || '';
+      bio = h('div', null, nameBox, h('div', { class: 'field' }, h('label', { for: 'p-bio', text: 'קצת עליי (נראה לכולן)' }), ta,
+        h('button', { type: 'button', class: 'btn small primary', style: 'align-self:flex-start', onclick: function () {
+          call('setBio', [ta.value], function () { toast('נשמר!'); });
+        } }, 'שמירה')));
+    } else {
+      bio = pr.bio ? h('p', { class: 'proj-desc', text: pr.bio }) : null;
+    }
+    var grid = h('div', { class: 'grid' });
+    function drawGrid() {
+      grid.replaceChildren();
+      if (!pr.projects.length) { grid.appendChild(emptyState('עוד אין תוצרים', 'כשיהיו, הם יופיעו כאן.')); return; }
+      pr.projects.forEach(function (p, i) { grid.appendChild(projectCard(p, i, drawGrid)); });
+      applyThumbs();
+    }
+    drawGrid();
+    m = openModal('פרופיל ' + pr.name, [
+      h('div', { class: 'row', style: 'justify-content:space-between;align-items:center' },
+        h('h2', null, pr.name, pr.grade ? h('span', { class: 'chip grade', style: 'margin-inline-start:10px', text: 'כיתה ' + pr.grade }) : null),
+        h('button', { type: 'button', class: 'btn small', onclick: m_close }, 'סגירה')),
+      bio,
+      h('div', { class: 'tiles' }, tile(pr.stats.projects, 'תוצרים'), tile(pr.stats.heartsReceived, 'לבבות שקיבלה'), tile(pr.stats.heartsGiven, 'לבבות שנתנה'), tile(pr.stats.commentsGiven, 'תגובות שכתבה')),
+      h('h3', { text: 'התוצרים', style: 'margin:16px 0 10px' }),
+      grid
+    ], true);
+    function m_close() { m.close(); }
+    ensureThumbs(pr.projects);
+  }
+
+  // ───── תמונות, פרסום ועריכה ─────
+  function resizeImage(file, cb) {
+    var fr = new FileReader();
+    fr.onload = function () {
+      var img = new Image();
+      img.onload = function () {
+        var sc = Math.min(1, 560 / Math.max(img.width, img.height));
+        var c = document.createElement('canvas');
+        c.width = Math.max(1, Math.round(img.width * sc)); c.height = Math.max(1, Math.round(img.height * sc));
+        c.getContext('2d').drawImage(img, 0, 0, c.width, c.height);
+        cb(c.toDataURL('image/jpeg', 0.7));
+      };
+      img.onerror = function () { toast('לא הצלחתי לקרוא את התמונה.', true); };
+      img.src = fr.result;
+    };
+    fr.readAsDataURL(file);
+  }
+
+  /** בורר צילום מסך: העלאת קובץ או הדבקה (Ctrl+V). מחזיר {node, get, dispose} */
+  function makeImagePicker(idPrefix) {
+    var data = '';
+    var preview = h('div', { class: 'preview' });
+    var file = h('input', { id: idPrefix + '-file', type: 'file', accept: 'image/*' });
+    function use(f) {
+      preview.replaceChildren(); data = '';
+      if (!f) return;
+      resizeImage(f, function (d) { data = d; preview.appendChild(h('img', { src: d, alt: 'תצוגה מקדימה' })); });
+    }
+    file.addEventListener('change', function () { use(file.files[0]); });
+    var zone = h('div', { class: 'paste-zone', tabindex: '0', role: 'button', 'aria-label': 'אזור להדבקת צילום מסך. לחצי כאן ואז Ctrl+V' }, 'או: להדביק צילום מסך כאן (Ctrl+V)');
+    zone.addEventListener('click', function () { zone.focus(); });
+    function onPaste(e) {
+      var items = (e.clipboardData && e.clipboardData.items) || [];
+      for (var i = 0; i < items.length; i++) {
+        if (items[i].type.indexOf('image') === 0) {
+          e.preventDefault(); file.value = ''; use(items[i].getAsFile()); toast('הצילום הודבק!'); return;
+        }
+      }
+    }
+    document.addEventListener('paste', onPaste);
+    return {
+      node: h('div', { class: 'field' }, h('label', { for: idPrefix + '-file', text: 'צילום מסך (לא חובה)' }), file, zone, preview),
+      get: function () { return data; },
+      dispose: function () { document.removeEventListener('paste', onPaste); }
+    };
+  }
+
+  /** שדה טקסט עם תווית */
+  function fld(id, label, long, max, value, placeholder) {
+    var el = long ? h('textarea', { id: id, rows: 3, maxlength: max, placeholder: placeholder || null }) : h('input', { id: id, maxlength: max, placeholder: placeholder || null });
+    el.value = value || '';
+    return { el: el, node: h('div', { class: 'field' }, h('label', { for: id, text: label }), el) };
+  }
+
+  function openPublish() {
+    var m;
+    var title = fld('pp-title', 'כותרת', false, 60, '', 'שם לתוצר');
+    var desc = fld('pp-desc', 'תיאור קצר: מה יש בפנים?', true, 300, '', 'מה אפשר לעשות בו?');
+    var link = fld('pp-link', 'קישור לקנבס', false, 500, '', 'https://...');
+    var pick = makeImagePicker('pp');
+    var orderSel = h('select', { id: 'pp-order' }, option('', 'ללא'));
+    S.orders.filter(function (o) { return (o.adoptedByMe || o.mine) && o.status !== 'פתוחה'; }).forEach(function (o) { orderSel.appendChild(option(o.id, o.title)); });
+    var form = h('form', { novalidate: true }, title.node, desc.node, link.node, pick.node,
+      h('div', { class: 'field' }, h('label', { for: 'pp-order', text: 'מתוך איזו הזמנה?' }), orderSel),
+      h('div', { class: 'modal-actions' },
+        h('button', { type: 'submit', class: 'btn primary' }, 'פרסום'),
+        h('button', { type: 'button', class: 'btn', onclick: function () { m.close(); } }, 'ביטול')));
+    form.addEventListener('submit', function (ev) {
+      ev.preventDefault();
+      if (!title.el.value.trim() || !desc.el.value.trim() || !link.el.value.trim()) { toast('חסרים כותרת, תיאור או קישור.', true); return; }
+      call('createProject', [{ title: title.el.value, description: desc.el.value, link: link.el.value.trim(), thumb: pick.get(), orderId: orderSel.value }], function (g) {
+        G = g; m.close(); renderGallery(); toast('התוצר פורסם!'); confetti();
+      });
+    });
+    m = openModal('פרסום תוצר', [h('h2', { text: 'פרסום תוצר בגלריה' }), form], false, pick.dispose);
+    title.el.focus();
+  }
+
+  /** עריכת תוצר שפרסמתי: כותרת, תיאור, קישור, וצילום מסך חדש */
+  function openEditProject(p) {
+    var m;
+    var title = fld('ep-title', 'כותרת', false, 60, p.title);
+    var desc = fld('ep-desc', 'תיאור קצר: מה יש בפנים?', true, 300, p.description);
+    var link = fld('ep-link', 'קישור לקנבס', false, 500, p.link);
+    var pick = makeImagePicker('ep');
+    var form = h('form', { novalidate: true }, title.node, desc.node, link.node, pick.node,
+      h('p', { class: 'hint', text: 'אם לא בוחרים תמונה חדשה, הצילום הקיים נשאר.' }),
+      h('div', { class: 'modal-actions' },
+        h('button', { type: 'submit', class: 'btn primary' }, 'שמירה'),
+        h('button', { type: 'button', class: 'btn', onclick: function () { m.close(); } }, 'ביטול')));
+    form.addEventListener('submit', function (ev) {
+      ev.preventDefault();
+      call('editMyProject', [p.id, { title: title.el.value, description: desc.el.value, link: link.el.value.trim(), thumb: pick.get() }], function (g) {
+        if (pick.get()) delete thumbs[p.id];
+        G = g; m.close(); renderGallery(); toast('נשמר!');
+      });
+    });
+    m = openModal('עריכת תוצר', [h('h2', { text: 'עריכת התוצר' }), form], false, pick.dispose);
+    title.el.focus();
+  }
+
+  /** עריכת הזמנה שהבאתי */
+  function openEditMine(o) {
+    var m;
+    var f = {
+      title: fld('eo-title', 'כותרת', false, 60, o.title),
+      userDescription: fld('eo-user', 'מי המשתמש', false, 120, o.userDescription),
+      need: fld('eo-need', 'הצורך במשפט אחד', false, 200, o.need),
+      interviewDetail: fld('eo-int', 'פרט מהראיון', true, 300, o.interviewDetail),
+      notes: fld('eo-notes', 'הערות', true, 300, o.notes)
+    };
+    var form = h('form', { novalidate: true },
+      f.title.node, f.userDescription.node, f.need.node, f.interviewDetail.node, f.notes.node,
+      h('div', { class: 'modal-actions' },
+        h('button', { type: 'submit', class: 'btn primary' }, 'שמירה'),
+        h('button', { type: 'button', class: 'btn', onclick: function () { m.close(); } }, 'ביטול')));
+    form.addEventListener('submit', function (ev) {
+      ev.preventDefault();
+      var v = {};
+      Object.keys(f).forEach(function (k) { v[k] = f[k].el.value; });
+      act('editMyOrder', [o.id, v], function () { m.close(); toast('ההזמנה עודכנה.'); });
+    });
+    m = openModal('עריכת הזמנה', [h('h2', { text: 'עריכת ההזמנה' }), form]);
+    f.title.el.focus();
+  }
+
+  /** דף הכנה לפיץ': שאלות מכוונות + זמנים מומלצים. נשמר ומוצג לכולן בזמן ההצגה. */
+  function openPitchPrep(p, onSaved) {
+    var m, pt = p.pitch || {};
+    var f = {
+      hook: fld('pp1', '1. למי בנינו ומה הצורך? (משפט פתיחה)', true, 200, pt.hook, 'דוד שלי מלצר ומתבלבל בחישוב טיפים...'),
+      client: fld('pp6', '2. תודה ללקוח/ה: מי זה/זו ומה אמר/ה על התוצר?', true, 200, pt.client, 'תודה לדוד שלי, שאמר שזה חסך לו הרבה זמן'),
+      demo: fld('pp2', '3. מה אראה בהדגמה? (עד שלושה צעדים)', true, 200, pt.demo, 'מכניסה סכום, בוחרת כמה אנשים, מקבלת חלוקה'),
+      feedback: fld('pp3', '4. מה שינינו אחרי המשוב של הלקוח?', true, 200, pt.feedback),
+      learned: fld('pp4', '5. מה למדתי? מה היה האתגר הכי גדול?', true, 200, pt.learned),
+      question: fld('pp5', '6. שאלה שאשאל את הכיתה', false, 200, pt.question, 'מה הייתן מוסיפות?')
+    };
+    var form = h('form', { novalidate: true },
+      h('div', { class: 'privacy' }, h('div', null, h('b', { text: 'זמן מומלץ: 3 דקות' }),
+        h('p', { text: '30 שניות פתיחה ותודה ללקוח (1 ו-2), דקה וחצי הדגמה חיה (3), דקה על המשוב ומה שלמדת (4 ו-5), ושאלה לכיתה (6).' })),
+        makeTimer(180)),
+      f.hook.node, f.client.node, f.demo.node, f.feedback.node, f.learned.node, f.question.node,
+      h('div', { class: 'checklist' }, h('b', { text: 'לפני שעולות:' }),
+        h('ul', null, h('li', { text: 'הקישור נפתח ועובד בלי להתחבר' }), h('li', { text: 'ניסיתי את ההדגמה פעם אחת מההתחלה עד הסוף' }),
+          h('li', { text: 'יש לי דוגמה מוכנה להכנסה (לא מקלידה בלייב)' }), h('li', { text: 'אני יודעת מה להגיד אם משהו נתקע' }))),
+      h('div', { class: 'modal-actions' },
+        h('button', { type: 'submit', class: 'btn primary' }, 'שמירה'),
+        h('button', { type: 'button', class: 'btn', onclick: function () { m.close(); } }, 'ביטול')));
+    form.addEventListener('submit', function (ev) {
+      ev.preventDefault();
+      var v = {};
+      Object.keys(f).forEach(function (k) { v[k] = f[k].el.value; });
+      call('savePitchPrep', [p.id, v], function (res) { p.pitch = res.pitch; syncProject(p); m.close(); toast('דף ההכנה נשמר!'); if (onSaved) onSaved(); });
+    });
+    m = openModal('דף הכנה לפיץ\'', [h('h2', { text: 'דף הכנה לפיץ\'' }), form]);
+    f.hook.el.focus();
+  }
+
+  // ───────────── רינדור כללי ─────────────
+  function render() {
+    $('#hello').textContent = 'היי ' + S.me.firstName + '! מה בונים היום?' + (S.me.grade ? ' (קבוצה ' + S.me.grade + "')" : '');
+    var adminBtn = document.querySelector('.nav-btn[data-tab="admin"]');
+    adminBtn.hidden = S.me.role !== 'teacher';
+    // תלמידה רואה רק את הקבוצה שלה, אז אין טעם בסינון לפי שכבה
+    $('#f-grade').parentNode.hidden = S.me.role !== 'teacher' && !!S.me.grade;
+    renderBoard();
+    renderMine();
+    if (S.me.role === 'teacher') renderAdmin();
+  }
+
+  // ───────────── התחלה ─────────────
+  function gate(msg) {
+    $('#gate-msg').textContent = msg;
+    $('#gate').hidden = false;
+    $('#app').hidden = true;
+  }
+
+  /** מסך הרשמה עצמית: שם פרטי + שכבה */
+  function registerGate() {
+    var name = h('input', { id: 'r-name', maxlength: 20, autocomplete: 'given-name', placeholder: 'שם פרטי בלבד' });
+    var grade = h('select', { id: 'r-grade' }, option('', 'בחרי שכבה'), option('ז', "ז'"), option('ח', "ח'"));
+    var form = h('form', { class: 'form-inline', novalidate: true },
+      h('div', { class: 'field' }, h('label', { for: 'r-name', text: 'איך קוראים לך?' }), name),
+      h('div', { class: 'field' }, h('label', { for: 'r-grade', text: 'באיזו שכבה את?' }), grade),
+      h('button', { type: 'submit', class: 'btn primary big' }, 'כניסה לבנק'));
+    form.addEventListener('submit', function (ev) {
+      ev.preventDefault();
+      if (!name.value.trim() || !grade.value) { toast('צריך שם ושכבה.', true); return; }
+      act('registerMe', [{ firstName: name.value, grade: grade.value }], function () {
+        $('#gate').hidden = true; $('#app').hidden = false; toast('ברוכה הבאה!');
+      });
+    });
+    $('#gate-msg').textContent = 'ברוכה הבאה! כדי להתחיל, ספרי לנו מי את.';
+    $('#gate-msg').parentNode.appendChild(form);
+    $('#gate').hidden = false;
+  }
+
+  function init() {
+    fillIcons();
+    initFilters();
+    initNewForm();
+    document.querySelectorAll('.nav-btn').forEach(function (b) {
+      b.addEventListener('click', function () { showTab(b.getAttribute('data-tab')); });
+    });
+    call('getBootstrap', [], function (res) {
+      if (res.status === 'noemail') {
+        gate('לא הצלחנו לזהות אותך. היכנסי עם המייל הארגוני של בית הספר ורענני את הדף.');
+      } else if (res.status === 'unregistered') {
+        registerGate();
+      } else {
+        S = res;
+        $('#app').hidden = false;
+        render();
+        startPresentingPoll();
+      }
+    });
+  }
+  document.addEventListener('DOMContentLoaded', init);
+})();
+</script>

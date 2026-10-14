@@ -1,0 +1,141 @@
+<!DOCTYPE html>
+<html lang="he" dir="rtl">
+<head>
+  <base target="_top">
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>בנק הזמנות</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Rubik:wght@400;500;700;800&display=swap" rel="stylesheet">
+  <?!= include('Styles'); ?>
+</head>
+<body>
+  <div class="bg" aria-hidden="true"><i></i><i></i><i></i></div>
+  <canvas id="confetti" aria-hidden="true"></canvas>
+
+  <!-- מצב טעינה -->
+  <div id="loading" class="loading" role="status" aria-live="polite">
+    <div class="spinner"></div><span>רגע, עובדת על זה...</span>
+  </div>
+  <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
+
+  <!-- מסך הודעה (לא ברשימה / לא מזוהה) -->
+  <div id="gate" class="gate" hidden>
+    <div class="glass gate-card">
+      <h1>בנק הזמנות</h1>
+      <p id="gate-msg"></p>
+    </div>
+  </div>
+
+  <div id="app" class="app" hidden>
+    <header class="top">
+      <h1>בנק הזמנות</h1>
+      <p id="hello" class="hello"></p>
+    </header>
+
+    <nav class="nav glass" aria-label="ניווט ראשי">
+      <button type="button" class="nav-btn" data-tab="board" aria-selected="true"><span data-icon="grid"></span><b>הלוח</b></button>
+      <button type="button" class="nav-btn" data-tab="new" aria-selected="false"><span data-icon="plus"></span><b>הזמנה חדשה</b></button>
+      <button type="button" class="nav-btn" data-tab="gallery" aria-selected="false"><span data-icon="image"></span><b>גלריה</b></button>
+      <button type="button" class="nav-btn" data-tab="mine" aria-selected="false"><span data-icon="user"></span><b>שלי</b></button>
+      <button type="button" class="nav-btn" data-tab="admin" aria-selected="false" hidden><span data-icon="shield"></span><b>ניהול</b></button>
+    </nav>
+
+    <!-- "מוצג עכשיו" -->
+    <div id="presenting" class="presenting glass" role="status" aria-live="polite" hidden></div>
+
+    <main>
+      <!-- הלוח -->
+      <section id="tab-board" class="tab" aria-label="הלוח">
+        <div id="board-progress"></div>
+        <div class="filters glass">
+          <div class="field grow">
+            <label for="f-search">חיפוש חופשי</label>
+            <input id="f-search" type="search" placeholder="מילה מהכותרת, מהצורך, משם...">
+          </div>
+          <div class="field">
+            <label for="f-size">גודל</label>
+            <select id="f-size"></select>
+          </div>
+          <div class="field">
+            <label for="f-status">סטטוס</label>
+            <select id="f-status"></select>
+          </div>
+          <div class="field">
+            <label for="f-grade">שכבה</label>
+            <select id="f-grade"></select>
+          </div>
+        </div>
+        <p id="board-count" class="count" aria-live="polite"></p>
+        <div id="board-list" class="grid"></div>
+      </section>
+
+      <!-- הזמנה חדשה -->
+      <section id="tab-new" class="tab" aria-label="הזמנה חדשה" hidden>
+        <div class="privacy" role="note">
+          <span data-icon="lock"></span>
+          <div>
+            <b>שומרות על הפרטיות</b>
+            <p>בלי שמות מלאים, בלי פרטי בריאות או כסף, ובלי טלפון או כתובת. שם פרטי או "דוד שלי" מספיקים.</p>
+          </div>
+        </div>
+        <form id="new-form" class="glass form" novalidate>
+          <h2>מה מזמינים?</h2>
+          <div class="field">
+            <label for="n-title">כותרת</label>
+            <input id="n-title" maxlength="60" required placeholder="למשל: מחשבון טיפים למסעדה">
+          </div>
+          <div class="field">
+            <label for="n-user">מי המשתמש</label>
+            <input id="n-user" maxlength="120" required placeholder="למשל: דוד שלי, מלצר">
+          </div>
+          <div class="field">
+            <label for="n-need">הצורך במשפט אחד</label>
+            <input id="n-need" maxlength="200" required placeholder="מה הוא רוצה שיהיה לו קל יותר?">
+          </div>
+          <div class="field">
+            <label for="n-interview">פרט מהראיון</label>
+            <textarea id="n-interview" maxlength="300" rows="3" required placeholder="משהו מעניין שהוא אמר לך"></textarea>
+          </div>
+          <div class="field">
+            <label for="n-notes">הערות (לא חובה)</label>
+            <textarea id="n-notes" maxlength="300" rows="2"></textarea>
+          </div>
+
+          <fieldset class="size-block">
+            <legend>מה הגודל?</legend>
+            <p class="hint">עני על ארבע השאלות, ונמליץ על קנבס או אפפסקריפט.</p>
+            <div id="questions"></div>
+            <div id="rec" class="rec" aria-live="polite"></div>
+          </fieldset>
+
+          <button type="submit" class="btn primary big">שולחת לבנק</button>
+        </form>
+      </section>
+
+      <!-- גלריה -->
+      <section id="tab-gallery" class="tab" aria-label="גלריה" hidden>
+        <div id="gallery-top"></div>
+        <div id="gallery-list" class="grid"></div>
+      </section>
+
+      <!-- שלי -->
+      <section id="tab-mine" class="tab" aria-label="שלי" hidden>
+        <div id="mine-list"></div>
+      </section>
+
+      <!-- ניהול -->
+      <section id="tab-admin" class="tab" aria-label="ניהול" hidden>
+        <div id="admin-box"></div>
+      </section>
+    </main>
+
+    <footer class="foot">
+      נבנה על ידי <a href="https://chepti.com" target="_blank" rel="noopener">חולמים תקשוב</a>
+    </footer>
+  </div>
+
+  <?!= include('Script'); ?>
+</body>
+</html>
